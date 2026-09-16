@@ -14,3 +14,8 @@ output "version" {
   description = "Chart version the release resolved to."
   value       = helm_release.this.version
 }
+
+output "releases" {
+  description = "Every Helm release this component installs, in apply order."
+  value       = concat(helm_release.pre[*].name, [helm_release.this.name], helm_release.post[*].name, helm_release.readiness[*].name)
+}

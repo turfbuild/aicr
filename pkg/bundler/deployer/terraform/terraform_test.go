@@ -70,9 +70,10 @@ func TestGenerate_Scenarios(t *testing.T) {
 			},
 		},
 		{
-			// A component with post-manifests expands into two releases.
-			// The dependent must wait for the TAIL of that chain, not for
-			// the primary chart, or it races the manifests.
+			// A component with post-manifests expands into two releases,
+			// both inside one module. The dependent names the component and
+			// gets the tail for free — with the flat shape it had to name
+			// "module.agentgateway_crds_post" to avoid racing the manifests.
 			name: "post_manifest_tail",
 			gen: func() *Generator {
 				crds := ref("agentgateway-crds", "agentgateway-system", "agentgateway-crds", "v1.5.0", "oci://cr.agentgateway.dev/charts")
@@ -173,6 +174,46 @@ func TestGenerate_Scenarios(t *testing.T) {
 				}
 			}(),
 			goldens: []string{fileMain},
+		},
+		{
+			// A readiness gate becomes the last slot in its component's
+			// module, so a dependent's depends_on covers it without naming
+			// it. The module golden is what proves the slot ignores
+			// var.wait.
+			name: "readiness",
+			gen: func() *Generator {
+				nfd := ref("nfd", "node-feature-discovery", "node-feature-discovery", "0.18.1", "https://kubernetes-sigs.github.io/node-feature-discovery/charts")
+				gpu := ref("gpu-operator", "gpu-operator", "gpu-operator", "v25.3.3", "https://helm.ngc.nvidia.com/nvidia")
+				gpu.DependencyRefs = []string{"nfd"}
+				return &Generator{
+					RecipeResult:       recipeWith(nfd, gpu),
+					Version:            testBundlerVersion,
+					ComponentReadiness: map[string]map[string][]byte{"gpu-operator": {"readiness.yaml": gateJob}},
+				}
+			}(),
+			goldens: []string{
+				fileMain, fileOutputs,
+				filepath.Join(moduleDir, "main.tf"),
+				filepath.Join(moduleDir, "variables.tf"),
+			},
+		},
+		{
+			// All four phases on one component: the shape the flat renderer
+			// turned into four sibling calls and three inter-call edges.
+			name: "composite",
+			gen: func() *Generator {
+				gw := ref("agentgateway", "agentgateway-system", "agentgateway", "v1.5.0", "oci://cr.agentgateway.dev/charts")
+				sink := ref("nvsentinel", "nvsentinel", "nvsentinel", "v0.3.0", "https://helm.ngc.nvidia.com/nvidia")
+				sink.DependencyRefs = []string{"agentgateway"}
+				return &Generator{
+					RecipeResult:           recipeWith(gw, sink),
+					Version:                testBundlerVersion,
+					ComponentPreManifests:  map[string]map[string][]byte{"agentgateway": {"quota.yaml": manifestDoc}},
+					ComponentPostManifests: map[string]map[string][]byte{"agentgateway": {"gateway.yaml": manifestDoc}},
+					ComponentReadiness:     map[string]map[string][]byte{"agentgateway": {"readiness.yaml": gateJob}},
+				}
+			}(),
+			goldens: []string{fileMain, fileOutputs},
 		},
 	}
 
@@ -291,12 +332,12 @@ func TestModuleLabel(t *testing.T) {
 	}
 }
 
-// TestBuildReleases_LabelCollision covers the one way the name -> label
+// TestBuildComponents_LabelCollision covers the one way the name -> label
 // mapping can lose information. Two component names that differ only in a
 // separator collapse to the same module label, which terraform reports as a
 // duplicate block in a file AICR wrote; catching it here attributes it to the
 // recipe instead.
-func TestBuildReleases_LabelCollision(t *testing.T) {
+func TestBuildComponents_LabelCollision(t *testing.T) {
 	a := ref("gpu-operator", "default", "gpu-operator", "1.0.0", "https://example.com/charts")
 	b := ref("gpu.operator", "default", "gpu-operator", "1.0.0", "https://example.com/charts")
 
@@ -308,6 +349,56 @@ func TestBuildReleases_LabelCollision(t *testing.T) {
 	if !strings.Contains(err.Error(), "module label") {
 		t.Errorf("error does not explain the collision: %v", err)
 	}
+}
+
+// TestGenerate_AsyncOverrideDoesNotDisarmTheGate locks Finding 6 of the
+// review: the shared override table marks kai-scheduler asynchronous, and with
+// one module call per FOLDER that wait=false literal landed on the component's
+// readiness call too — a gate that submits its Job and returns. The slot reads
+// a constant instead of var.wait, so the module cannot express that mistake.
+func TestGenerate_AsyncOverrideDoesNotDisarmTheGate(t *testing.T) {
+	kai := ref("kai-scheduler", "kai-scheduler", "kai-scheduler", "v0.16.9", "oci://ghcr.io/kai-scheduler/kai-scheduler")
+	g := &Generator{
+		RecipeResult:       recipeWith(kai),
+		Version:            testBundlerVersion,
+		ComponentReadiness: map[string]map[string][]byte{"kai-scheduler": {"readiness.yaml": gateJob}},
+	}
+	outputDir := t.TempDir()
+	if _, err := g.Generate(context.Background(), outputDir); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	// The call carries the override...
+	if main := readFile(t, filepath.Join(outputDir, fileMain)); !strings.Contains(main, "wait    = false") {
+		t.Errorf("main.tf lost the async override:\n%s", main)
+	}
+	// ...and the gate slot ignores it.
+	mod := readFile(t, filepath.Join(outputDir, moduleDir, "main.tf"))
+	const gateBlock = `resource "helm_release" "readiness"`
+	at := strings.Index(mod, gateBlock)
+	if at < 0 {
+		t.Fatalf("module has no readiness slot:\n%s", mod)
+	}
+	gate := stripComments(mod[at:])
+	if strings.Contains(gate, "var.wait") {
+		t.Errorf("the readiness slot reads var.wait, so an async component disarms its own gate:\n%s", gate)
+	}
+	if !strings.Contains(gate, "wait_for_jobs = true") {
+		t.Errorf("the readiness slot does not block on the gate Job:\n%s", gate)
+	}
+}
+
+// stripComments drops whole-line comments so an assertion about generated
+// ARGUMENTS is not satisfied, or defeated, by prose that mentions them.
+func stripComments(hcl string) string {
+	var kept []string
+	for _, line := range strings.Split(hcl, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
 
 func TestHCLString(t *testing.T) {
@@ -382,6 +473,15 @@ func assertFmtStable(t *testing.T, path string) {
 	}
 	flush()
 }
+
+// gateJob and manifestDoc stand in for real payloads. localformat renders both
+// through the manifest pipeline and wraps them in a chart; their content only
+// has to be valid YAML with a kind localformat does not special-case.
+var (
+	gateJob = []byte("apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: gate\n  namespace: '{{ .Release.Namespace }}'\nspec:\n  template:\n    spec:\n      restartPolicy: Never\n      containers:\n        - name: gate\n          image: ghcr.io/nvidia/aicr-gate:latest\n")
+
+	manifestDoc = []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: placeholder\n")
+)
 
 func ref(name, ns, chart, version, source string) recipe.ComponentRef {
 	return recipe.ComponentRef{

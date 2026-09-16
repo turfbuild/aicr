@@ -5,32 +5,8 @@
 # independent components apply concurrently. A component's own pre / post /
 # readiness folders chain inside the module, which is why depending on the
 # module means the component is done.
-#
-# Generated with --serial: the declared graph has been replaced by a single
-# linear chain, so components apply strictly one at a time.
 
-# 001-cert-manager — cert-manager v1.17.2
-module "cert_manager" {
-  source = "./modules/component"
-
-  release_name     = "cert-manager"
-  namespace        = "cert-manager"
-  create_namespace = true
-
-  chart         = "cert-manager"
-  repository    = "https://charts.jetstack.io"
-  chart_version = "v1.17.2"
-
-  values_files = [
-    "${path.module}/001-cert-manager/values.yaml",
-  ]
-
-  atomic  = var.atomic
-  wait    = var.wait
-  timeout = var.timeout
-}
-
-# 002-nfd — node-feature-discovery 0.18.1
+# 001-nfd — node-feature-discovery 0.18.1
 module "nfd" {
   source = "./modules/component"
 
@@ -43,19 +19,16 @@ module "nfd" {
   chart_version = "0.18.1"
 
   values_files = [
-    "${path.module}/002-nfd/values.yaml",
+    "${path.module}/001-nfd/values.yaml",
   ]
 
   atomic  = var.atomic
   wait    = var.wait
   timeout = var.timeout
-
-  depends_on = [
-    module.cert_manager,
-  ]
 }
 
-# 003-gpu-operator — gpu-operator v25.3.3
+# 002-gpu-operator — gpu-operator v25.3.3
+# plus 003-gpu-operator-readiness
 module "gpu_operator" {
   source = "./modules/component"
 
@@ -68,8 +41,10 @@ module "gpu_operator" {
   chart_version = "v25.3.3"
 
   values_files = [
-    "${path.module}/003-gpu-operator/values.yaml",
+    "${path.module}/002-gpu-operator/values.yaml",
   ]
+
+  readiness_chart = "${path.module}/003-gpu-operator-readiness"
 
   atomic  = var.atomic
   wait    = var.wait

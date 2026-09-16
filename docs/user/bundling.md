@@ -546,7 +546,7 @@ Namespace removes everything inside it.
 that ships a readiness test, run as a post-component Job so the deployer blocks
 on component-specific signals (e.g. GPU Operator `ClusterPolicy` state) that
 Helm and Argo CD cannot assess natively. Supported with `--deployer helm`,
-`argocd`, and `argocd-helm`; off by default.
+`argocd`, `argocd-helm`, and `terraform`; off by default.
 
 ```bash
 aicr bundle --recipe recipe.yaml --readiness-hooks --output ./bundles

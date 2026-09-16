@@ -18,8 +18,24 @@ Package terraform generates a Terraform/OpenTofu root module from an AICR recipe
 Per-component folder content (values.yaml, cluster-values.yaml, upstream.env,
 Chart.yaml + templates/) is delegated to pkg/bundler/deployer/localformat, the
 same writer the helm and helmfile deployers use. This package owns only the
-Terraform layer on top: a root module whose module calls mirror the emitted
-folders one-for-one, plus the generic component module they all share.
+Terraform layer on top: a root module with one module call per component, plus
+the generic component module they all share.
+
+# One module call per component
+
+localformat emits up to four folders for a component — pre, primary, post,
+readiness. They become slots on a single module call and chain inside it, so a
+dependent's depends_on names the component and gets the whole chain. The flat
+alternative, one call per folder, makes the module boundary lie: with
+--readiness-hooks, depends_on = [module.gpu_operator] would not mean
+gpu-operator is ready, and a dependent would have to name
+module.gpu_operator_readiness to say so.
+
+Assigning a folder to a slot means classifying it, which this package does with
+the same suffix test argocd's waveForFolder uses (see phaseOf). localformat
+reserves "-readiness" outright and rejects a component whose name would collide
+with an injected "-pre"/"-post" sibling, which is what makes the comparison
+safe.
 
 # Deployment Ordering
 
@@ -30,29 +46,37 @@ and helmfile (nested level files) deployers, which can only approximate the
 graph as depth tiers and therefore make every component wait on every sibling
 at the prior depth.
 
-Edges are derived from the emitted folder list rather than re-walked from the
-recipe, so the -pre / primary / -post / -readiness chain a component may expand
-into is ordered correctly without this package re-deriving folder shape:
+Edges land in two places:
 
-  - within a component, each folder depends on the previous folder of the same
-    component (pre -> primary -> post -> readiness);
-  - the first folder of a component depends on the LAST folder of each of its
-    declared dependencyRefs, so a dependent waits for the full chain;
-  - a dependencyRef naming a component that is not in the enabled-filtered set
-    (disabled via overrides, or provided externally) is dropped rather than
-    generating an edge to a module that will not exist.
+  - across components, on the module call: each call depends on the calls of
+    its declared dependencyRefs. A ref naming a component absent from the
+    enabled set (disabled via overrides, or provided externally) is dropped —
+    depends_on = [module.absent] is a parse error, not a plan error.
+  - within a component, on the resources inside the module: pre -> primary ->
+    post -> readiness, in that fixed order.
 
-Under Serial (--serial) the cross-component edges collapse to a single chain:
-the first folder of each component depends on the last folder of the previous
-component in deployment order, so releases apply strictly one at a time.
+Under Serial (--serial) the cross-component edges collapse to a single chain
+through deployment order, so components apply strictly one at a time.
 
 # Why depends_on on the module call
 
-Each component is one module call, and the edge is placed on the CALL, not on
-the helm_release inside it. A depends_on on a module call is a fact about
-everything the module contains, so the ordering still holds if a component's
-module later grows a second resource. It also means a reader of main.tf sees
-the recipe graph without opening the module.
+A depends_on on a call is a fact about everything the module contains, which is
+exactly the claim a dependent wants to make. It also lets a reader of main.tf
+see the recipe graph without opening the module.
+
+# Readiness gates
+
+With ComponentReadiness set, a component's gate is the last slot in its module:
+a Job asserting the signal that actually means ready, which helm's own wait
+cannot see. The slot hardcodes wait and wait_for_jobs rather than reading
+var.wait, so a component carrying an async override (see
+deployer.ComponentOverrideFor) cannot disarm its own gate.
+
+The gate is a plain Job, not a helm hook: localformat's stripHelmHooks removes
+sync-phase hook annotations from every local-chart folder, and wait_for_jobs is
+what blocks on completion. One consequence is that Terraform re-runs the gate
+only when the gate release itself diffs — unlike deploy.sh, which reinstalls
+unconditionally, and argocd, which replaces the Job on every sync.
 
 # Cluster connection
 
@@ -73,10 +97,10 @@ exist first. See README.md in the generated bundle.
 
 # Cluster rollover
 
-With ClusterRollover set, each component module additionally carries a
-null_resource keyed on var.cluster_endpoint and a replace_triggered_by pointing
-at it, so replacing the cluster replaces every release rather than leaving
-state that describes objects in a cluster that no longer exists. Off by
+With ClusterRollover set, each component module carries one null_resource keyed
+on var.cluster_endpoint, and every slot in it a replace_triggered_by pointing at
+that resource, so replacing the cluster replaces every release rather than
+leaving state that describes objects in a cluster that no longer exists. Off by
 default: the combination of replace_triggered_by and a deferred referent is
 refused by current Terraform deferred-action builds ("no change found for
 null_resource.cluster in module.X"), so the shim and the unknown-connection
@@ -90,14 +114,14 @@ ErrCodeInvalidRequest at generation time, matching the flux deployer.
 # Generated Structure
 
 	output/
-	├── main.tf                     # one module call per folder, carrying the DAG
+	├── main.tf                     # one module call per component, carrying the DAG
 	├── versions.tf                 # required_providers + the helm provider config
 	├── variables.tf
 	├── outputs.tf
 	├── terraform.tfvars.example
 	├── modules/
 	│   └── component/
-	│       ├── main.tf             # the generic one-release module
+	│       ├── main.tf             # the generic component module: pre/chart/post/gate
 	│       ├── variables.tf
 	│       └── outputs.tf
 	├── 001-nfd/                    # localformat folders, unchanged

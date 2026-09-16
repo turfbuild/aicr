@@ -400,13 +400,19 @@ what it actually needs — and it reads naturally to flux users because
 `depends_on` is a native dependency graph, so the terraform deployer
 projects the declared edges onto it the same way flux does, and the two
 deployers emit the same edge set for the same recipe. It differs in
-where the edge is attached: each component is one module call, and the
-edge sits on the **call**, so it orders everything the module contains
-rather than one resource inside it. The edge targets are read back off
-the emitted folder list rather than re-derived from component names,
-which is why a dependent automatically waits for a `-post` or
-`-readiness` tail without this deployer knowing those tails exist. See
-`buildReleases`.
+where the edge is attached: each component is **one module call**, and
+the edge sits on the call, so it orders everything the module contains
+rather than one resource inside it. A component's `-pre`, `-post` and
+`-readiness` folders become slots on that same module and chain inside
+it, so `depends_on = [module.gpu_operator]` covers the component's gate
+without naming it — the claim the module boundary is there to make. The
+slots are assigned by the same `-pre`/`-post`/`-readiness` suffix test
+argocd's `waveForFolder` uses. See `buildComponents` and `phaseOf`.
+
+The readiness slot hardcodes `wait`/`wait_for_jobs` rather than reading
+the bundle-wide variable: an async component (see
+`deployer.ComponentOverrideFor`) may skip waiting on its own workloads,
+never on the gate that asserts it came up.
 
 **argocd / argocd-helm — tiers as sync-wave bands.** Argo CD's
 `sync-wave` is a single integer per Application. Applications sharing a

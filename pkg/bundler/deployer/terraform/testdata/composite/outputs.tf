@@ -8,22 +8,23 @@ output "criteria" {
 output "components" {
   description = "Component -> namespace, for every component in the recipe."
   value = {
-    "cert-manager" = "cert-manager"
-    "nfd"          = "node-feature-discovery"
-    "gpu-operator" = "gpu-operator"
+    "agentgateway" = "agentgateway-system"
+    "nvsentinel"   = "nvsentinel"
   }
 }
 
 output "releases" {
   description = "Helm release -> namespace, auxiliary pre/post/readiness releases included."
   value = {
-    "cert-manager" = "cert-manager"
-    "nfd"          = "node-feature-discovery"
-    "gpu-operator" = "gpu-operator"
+    "agentgateway-pre"       = "agentgateway-system"
+    "agentgateway"           = "agentgateway-system"
+    "agentgateway-post"      = "agentgateway-system"
+    "agentgateway-readiness" = "agentgateway-system"
+    "nvsentinel"             = "nvsentinel"
   }
 }
 
 output "namespaces" {
   description = "Distinct namespaces the bundle installs into."
-  value       = distinct(["cert-manager", "node-feature-discovery", "gpu-operator"])
+  value       = distinct(["agentgateway-system", "nvsentinel"])
 }

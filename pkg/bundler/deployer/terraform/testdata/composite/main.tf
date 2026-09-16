@@ -6,31 +6,8 @@
 # readiness folders chain inside the module, which is why depending on the
 # module means the component is done.
 
-# 001-agentgateway-crds — agentgateway-crds v1.5.0
-# plus 002-agentgateway-crds-post
-module "agentgateway_crds" {
-  source = "./modules/component"
-
-  release_name     = "agentgateway-crds"
-  namespace        = "agentgateway-system"
-  create_namespace = true
-
-  chart         = "agentgateway-crds"
-  repository    = "oci://cr.agentgateway.dev/charts"
-  chart_version = "v1.5.0"
-
-  values_files = [
-    "${path.module}/001-agentgateway-crds/values.yaml",
-  ]
-
-  post_chart = "${path.module}/002-agentgateway-crds-post"
-
-  atomic  = var.atomic
-  wait    = var.wait
-  timeout = var.timeout
-}
-
-# 003-agentgateway — agentgateway v1.5.0
+# 002-agentgateway — agentgateway v1.5.0
+# plus 001-agentgateway-pre, 003-agentgateway-post, 004-agentgateway-readiness
 module "agentgateway" {
   source = "./modules/component"
 
@@ -43,7 +20,32 @@ module "agentgateway" {
   chart_version = "v1.5.0"
 
   values_files = [
-    "${path.module}/003-agentgateway/values.yaml",
+    "${path.module}/002-agentgateway/values.yaml",
+  ]
+
+  pre_chart       = "${path.module}/001-agentgateway-pre"
+  post_chart      = "${path.module}/003-agentgateway-post"
+  readiness_chart = "${path.module}/004-agentgateway-readiness"
+
+  atomic  = var.atomic
+  wait    = var.wait
+  timeout = var.timeout
+}
+
+# 005-nvsentinel — nvsentinel v0.3.0
+module "nvsentinel" {
+  source = "./modules/component"
+
+  release_name     = "nvsentinel"
+  namespace        = "nvsentinel"
+  create_namespace = true
+
+  chart         = "nvsentinel"
+  repository    = "https://helm.ngc.nvidia.com/nvidia"
+  chart_version = "v0.3.0"
+
+  values_files = [
+    "${path.module}/005-nvsentinel/values.yaml",
   ]
 
   atomic  = var.atomic
@@ -51,6 +53,6 @@ module "agentgateway" {
   timeout = var.timeout
 
   depends_on = [
-    module.agentgateway_crds,
+    module.agentgateway,
   ]
 }

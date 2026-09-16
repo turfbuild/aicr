@@ -15,26 +15,23 @@
 package terraform
 
 import (
+	"fmt"
 	"regexp"
 	"sort"
 
 	"github.com/NVIDIA/aicr/pkg/bundler/deployer/localformat"
+	"github.com/NVIDIA/aicr/pkg/errors"
 	"github.com/NVIDIA/aicr/pkg/recipe"
 )
 
 // nonIdentifier matches every rune that cannot appear in a Terraform
-// identifier. Component names are already constrained to safe path
-// components by the time they reach here; this covers the hyphens and dots
-// that are legal in a component name but not in a module label.
+// identifier — the hyphens and dots that are legal in a component name.
 var nonIdentifier = regexp.MustCompile(`[^A-Za-z0-9_]`)
 
-// moduleLabel converts a release name into a Terraform module label.
-// Terraform identifiers must start with a letter or underscore, so a name
-// that begins with a digit is prefixed rather than silently truncated.
-//
-// The mapping is not injective in principle — "gpu-operator" and
-// "gpu.operator" would collide — so buildReleases checks the emitted labels
-// for collisions instead of trusting this to be unique.
+// moduleLabel converts a component name into a Terraform module label. A name
+// starting with a digit is prefixed, not truncated. The mapping is not
+// injective — "gpu-operator" and "gpu.operator" collide — so buildComponents
+// checks the emitted labels rather than trusting this.
 func moduleLabel(name string) string {
 	label := nonIdentifier.ReplaceAllString(name, "_")
 	if label == "" {
@@ -46,118 +43,152 @@ func moduleLabel(name string) string {
 	return label
 }
 
-// release is one emitted folder rendered as one module call.
-type release struct {
-	// Folder is the localformat folder this module call installs.
-	Folder localformat.Folder
+// phase is a folder's position in its component's chain.
+type phase int
 
-	// Label is the module block label, e.g. "gpu_operator_pre".
-	Label string
+const (
+	phasePrimary phase = iota
+	phasePre
+	phasePost
+	phaseReadiness
+)
 
-	// DependsOn lists the module labels this call must be ordered after,
-	// sorted for deterministic output.
-	DependsOn []string
+// phaseOf classifies a folder by its name relative to its parent — the same
+// suffix test argocd's waveForFolder uses. Safe for the same reason: localformat
+// reserves "-readiness" outright and rejects a component whose name would
+// collide with an injected "-pre"/"-post" sibling.
+func phaseOf(f localformat.Folder) phase {
+	switch f.Name {
+	case f.Parent + "-pre":
+		return phasePre
+	case f.Parent + "-post":
+		return phasePost
+	case f.Parent + "-readiness":
+		return phaseReadiness
+	default:
+		return phasePrimary
+	}
 }
 
-// buildReleases turns the emitted folder list into module calls carrying the
-// recipe's dependency DAG.
-//
-// Edges come from two places. WITHIN a component, folders chain in emission
-// order — pre -> primary -> post -> readiness — because localformat emits them
-// in the order they must apply and nothing else records that order. ACROSS
-// components, each component's FIRST folder depends on the LAST folder of each
-// declared dependencyRef, so a dependent waits for the dependency's whole
-// chain and not merely its primary chart.
-//
-// Deriving the cross-component edges from folders rather than from component
-// names is what keeps this package out of the business of re-deriving folder
-// shape: it never has to know that a component with post-manifests grows a
-// "-post" tail, only that the tail is the last folder carrying that Parent.
+// component is one recipe component rendered as one module call. localformat
+// emits up to four folders for it; they become slots on the module and chain
+// inside it, so depends_on on the CALL is a fact about the whole component —
+// gate included. The flat alternative, one call per folder, makes a dependent
+// name the tail ("module.gpu_operator_readiness") to mean "gpu-operator".
+type component struct {
+	Name  string
+	Label string
+
+	Primary   localformat.Folder
+	Pre       *localformat.Folder
+	Post      *localformat.Folder
+	Readiness *localformat.Folder
+
+	// DependsOn lists the module labels this call is ordered after, sorted
+	// for deterministic output.
+	DependsOn []string
+
+	hasPrimary bool
+}
+
+// Folders returns the component's folders in apply order.
+func (c component) Folders() []localformat.Folder {
+	out := make([]localformat.Folder, 0, 4)
+	if c.Pre != nil {
+		out = append(out, *c.Pre)
+	}
+	out = append(out, c.Primary)
+	if c.Post != nil {
+		out = append(out, *c.Post)
+	}
+	if c.Readiness != nil {
+		out = append(out, *c.Readiness)
+	}
+	return out
+}
+
+// buildComponents groups the emitted folders by component and attaches the
+// recipe's declared edges. Components come back in emission order, which is
+// deployment order.
 //
 // A dependencyRef naming a component absent from refs — disabled via
-// overrides.enabled=false, or satisfied externally — is dropped. Recipe
-// resolution has already validated the real edges, and emitting
-// depends_on = [module.absent] would not be a plan error, it would be a
-// parse error.
+// overrides.enabled=false, or satisfied externally — is dropped: depends_on =
+// [module.absent] is a parse error, not a plan error.
 //
-// When serial is set the declared edges are replaced by a single chain: each
-// component's first folder depends on the previous component's last folder,
-// matching the flux deployer's --serial fallback.
-func buildReleases(folders []localformat.Folder, refs []recipe.ComponentRef, serial bool) ([]release, error) {
-	// first/last folder index per component, in emission order.
-	firstOf := make(map[string]int, len(refs))
-	lastOf := make(map[string]int, len(refs))
-	for i, f := range folders {
-		if _, seen := firstOf[f.Parent]; !seen {
-			firstOf[f.Parent] = i
+// Under serial the declared edges are replaced by one chain through deployment
+// order, matching flux's --serial fallback.
+func buildComponents(folders []localformat.Folder, refs []recipe.ComponentRef, serial bool) ([]component, error) {
+	byName := make(map[string]*component, len(refs))
+	order := make([]string, 0, len(refs))
+	labels := make(map[string]string, len(refs))
+
+	for i := range folders {
+		f := folders[i]
+		c, seen := byName[f.Parent]
+		if !seen {
+			label := moduleLabel(f.Parent)
+			if prev, clash := labels[label]; clash {
+				return nil, errIdentifierCollision(prev, f.Parent, label)
+			}
+			labels[label] = f.Parent
+			c = &component{Name: f.Parent, Label: label}
+			byName[f.Parent] = c
+			order = append(order, f.Parent)
 		}
-		lastOf[f.Parent] = i
+		switch phaseOf(f) {
+		case phasePre:
+			c.Pre = &f
+		case phasePost:
+			c.Post = &f
+		case phaseReadiness:
+			c.Readiness = &f
+		case phasePrimary:
+			c.Primary = f
+			c.hasPrimary = true
+		}
 	}
 
-	releases := make([]release, len(folders))
-	labels := make(map[string]string, len(folders))
-	for i, f := range folders {
-		label := moduleLabel(f.Name)
-		if prev, clash := labels[label]; clash {
-			return nil, errIdentifierCollision(prev, f.Name, label)
-		}
-		labels[label] = f.Name
-		releases[i] = release{Folder: f, Label: label}
-	}
-
-	// Within a component: chain each folder to the previous one.
-	prevOfParent := make(map[string]int, len(refs))
-	for i, f := range folders {
-		if prev, ok := prevOfParent[f.Parent]; ok {
-			releases[i].DependsOn = append(releases[i].DependsOn, releases[prev].Label)
-		}
-		prevOfParent[f.Parent] = i
-	}
-
-	// Across components: attach the declared edges to each component's head.
-	present := make(map[string]bool, len(refs))
-	for _, r := range refs {
-		present[r.Name] = true
-	}
-	prevComponentTail := -1
+	prev := ""
 	for _, ref := range refs {
-		head, ok := firstOf[ref.Name]
-		if !ok {
-			// A component that emitted no folder (e.g. every manifest
-			// rendered empty) is not an error here — localformat already
-			// decided it contributes nothing to apply.
+		c, emitted := byName[ref.Name]
+		if !emitted {
+			// localformat wrote nothing for it (every manifest rendered
+			// empty), so it contributes nothing to apply.
 			continue
 		}
-		var targets []string
 		if serial {
-			if prevComponentTail >= 0 {
-				targets = append(targets, releases[prevComponentTail].Label)
+			if prev != "" {
+				c.DependsOn = append(c.DependsOn, byName[prev].Label)
 			}
 		} else {
 			for _, dep := range ref.DependencyRefs {
-				if !present[dep] {
-					continue
+				if d, enabled := byName[dep]; enabled {
+					c.DependsOn = append(c.DependsOn, d.Label)
 				}
-				tail, hasTail := lastOf[dep]
-				if !hasTail {
-					continue
-				}
-				targets = append(targets, releases[tail].Label)
 			}
 		}
-		releases[head].DependsOn = append(releases[head].DependsOn, targets...)
-		prevComponentTail = lastOf[ref.Name]
+		prev = ref.Name
 	}
 
-	for i := range releases {
-		releases[i].DependsOn = dedupeSorted(releases[i].DependsOn)
+	out := make([]component, 0, len(order))
+	for _, name := range order {
+		c := byName[name]
+		if !c.hasPrimary {
+			// Unreachable through localformat, which only injects an
+			// auxiliary folder alongside a primary. Caught here because the
+			// alternative is a module call with no chart argument.
+			return nil, errors.New(errors.ErrCodeInternal,
+				fmt.Sprintf("component %q emitted auxiliary folders but no primary folder", name))
+		}
+		c.DependsOn = dedupeSorted(c.DependsOn)
+		out = append(out, *c)
 	}
-	return releases, nil
+	return out, nil
 }
 
-// dedupeSorted sorts and de-duplicates a label list. A component whose head
-// folder is also its tail can pick up the same target twice when a dependency
-// is named more than once; sorting keeps generation deterministic.
+// dedupeSorted sorts and de-duplicates a label list. A dependency named more
+// than once yields the same target twice; sorting keeps generation
+// deterministic.
 func dedupeSorted(in []string) []string {
 	if len(in) == 0 {
 		return nil
@@ -172,16 +203,19 @@ func dedupeSorted(in []string) []string {
 	return out
 }
 
-// valuesFilesForFolder returns the values files a folder's module call passes
-// to helm, relative to the bundle root, in the order helm must layer them:
-// values.yaml first, then cluster-values.yaml so operator edits win.
+// valuesFilesFor returns the values files the primary release layers, relative
+// to the bundle root: values.yaml first, then cluster-values.yaml so operator
+// edits win. localformat writes cluster-values.yaml unconditionally, empty when
+// the component declares no dynamic paths; referencing an empty one reads as
+// "something to fill in here", so it is listed only when there is. Matches the
+// helmfile deployer.
 //
-// localformat writes cluster-values.yaml unconditionally, empty when the
-// component declares no dynamic paths. Referencing an empty one would be
-// harmless but misleading — it reads as "there is something here to fill in" —
-// so the second file is listed only when the component actually has dynamic
-// values, matching the helmfile deployer's rule.
-func valuesFilesForFolder(f localformat.Folder, dynamicPaths []string) []string {
+// The pre/post/readiness folders take no values at all. localformat hands each
+// auxiliary chart a copy of the parent's values, but their templates are
+// already rendered and reference nothing from .Values — and Terraform, unlike
+// helm, records the file contents in state, so wiring them up would diff the
+// gate every time the component's values changed.
+func valuesFilesFor(f localformat.Folder, dynamicPaths []string) []string {
 	files := []string{f.Dir + "/" + fileValues}
 	if len(dynamicPaths) > 0 {
 		files = append(files, f.Dir+"/"+fileClusterValues)

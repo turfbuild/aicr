@@ -37,11 +37,13 @@ type bundleData struct {
 	ClusterRollover bool
 	ChildModule     bool
 	Serial          bool
-	Releases        []releaseData
+	Components      []componentData
 
-	// ReleaseMap is the releases output's body: quoted release name -> quoted
-	// namespace, aligned like any other argument group.
-	ReleaseMap []attr
+	// ReleaseMap is the releases output's body: every Helm release the bundle
+	// installs, auxiliary ones included, as quoted name -> quoted namespace.
+	// ComponentMap is the same for components only.
+	ReleaseMap   []attr
+	ComponentMap []attr
 }
 
 // Argument names this package emits in more than one place.
@@ -58,23 +60,27 @@ type attr struct {
 	Value string
 }
 
-// releaseData is one module call. The arguments arrive pre-grouped rather
+// componentData is one module call. The arguments arrive pre-grouped rather
 // than as loose fields because the groups ARE the formatting: `terraform fmt`
 // aligns the `=` of contiguous argument lines and resets at each blank line,
 // so a generator that does not know its own groups cannot emit output that is
 // already fmt-clean. See align.
-type releaseData struct {
+type componentData struct {
 	Label string
 	Title string
-	// ReleaseName and Namespace are also carried raw, for outputs.tf and the
-	// README, where they are prose rather than arguments.
-	ReleaseName string
-	Namespace   string
+	// Extra names the auxiliary folders, when there are any. Empty for the
+	// common single-folder component.
+	Extra string
+	// Name and Namespace are also carried raw, for outputs.tf and the README,
+	// where they are prose rather than arguments.
+	Name      string
+	Namespace string
 
 	Identity    []attr // release_name, namespace, create_namespace
 	Chart       []attr // chart, and the upstream coordinates when there are any
-	Behavior    []attr // atomic, wait, timeout, and the rollover trigger
 	ValuesFiles []string
+	Phases      []attr // pre_chart / post_chart / readiness_chart, when present
+	Behavior    []attr // atomic, wait, timeout, and the rollover trigger
 	DependsOn   []string
 	// Note is an inline comment above the behavior group, explaining a
 	// per-component override. Empty when the component takes the defaults.
@@ -105,7 +111,7 @@ func align(indent string, attrs []attr) string {
 	return strings.Join(lines, "\n")
 }
 
-func (g *Generator) bundleData(releases []release) bundleData {
+func (g *Generator) bundleData(components []component) bundleData {
 	criteria := ""
 	if g.RecipeResult.Criteria != nil {
 		criteria = g.RecipeResult.Criteria.String()
@@ -116,48 +122,39 @@ func (g *Generator) bundleData(releases []release) bundleData {
 		ClusterRollover: g.ClusterRollover,
 		ChildModule:     g.ChildModule,
 		Serial:          g.Serial,
-		Releases:        make([]releaseData, 0, len(releases)),
+		Components:      make([]componentData, 0, len(components)),
 	}
-	for _, r := range releases {
-		f := r.Folder
-		rd := releaseData{
-			Label:       r.Label,
-			Title:       folderTitle(f),
-			ReleaseName: f.Name,
-			Namespace:   f.Namespace,
+	for _, c := range components {
+		primary := c.Primary
+		cd := componentData{
+			Label:     c.Label,
+			Title:     componentTitle(c),
+			Extra:     extraFolders(c),
+			Name:      c.Name,
+			Namespace: primary.Namespace,
 			Identity: []attr{
-				{"release_name", hclString(f.Name)},
-				{"namespace", hclString(f.Namespace)},
-				{"create_namespace", strconv.FormatBool(f.CreateNamespace)},
+				{"release_name", hclString(c.Name)},
+				{"namespace", hclString(primary.Namespace)},
+				{"create_namespace", strconv.FormatBool(headFolder(c).CreateNamespace)},
 			},
+			Chart:       chartAttrs(primary),
+			ValuesFiles: valuesFilesFor(primary, g.DynamicValues[c.Name]),
+			Phases:      phaseAttrs(c),
 			Behavior: []attr{
 				{"atomic", "var.atomic"},
 				{argWait, "var.wait"},
 				{argTimeout, "var.timeout"},
 			},
-			ValuesFiles: valuesFilesForFolder(f, g.DynamicValues[f.Parent]),
-			DependsOn:   r.DependsOn,
+			DependsOn: c.DependsOn,
 		}
-		if f.Kind == localformat.KindUpstreamHelm && f.Upstream != nil {
-			rd.Chart = []attr{{"chart", hclString(f.Upstream.Chart)}}
-			if f.Upstream.Repo != "" {
-				rd.Chart = append(rd.Chart, attr{"repository", hclString(f.Upstream.Repo)})
-			}
-			if f.Upstream.Version != "" {
-				rd.Chart = append(rd.Chart, attr{"chart_version", hclString(f.Upstream.Version)})
-			}
-		} else {
-			rd.Chart = []attr{{"chart", localChartExpr(f.Dir)}}
-		}
-		// Per-component overrides, keyed by the PARENT component so a
-		// primary release and its injected folders agree. Rendered as
-		// literals rather than var references: they are facts about the
-		// component, not knobs, and an operator who flips var.wait for the
-		// bundle must not silently re-enable a wait that is known to time
-		// out. deploy.sh and the helmfile deployer make the same override.
-		if ov, hasOverride := deployer.ComponentOverrideFor(f.Parent); hasOverride {
-			rd.Behavior = overrideBehavior(rd.Behavior, ov)
-			rd.Note = overrideNote(ov)
+		// Per-component overrides are facts about the component, not knobs, so
+		// they render as literals: an operator flipping var.wait for the bundle
+		// must not silently re-enable a wait that is known to time out. The
+		// readiness slot ignores var.wait entirely, so an async component
+		// cannot disarm its own gate. deploy.sh and helmfile share the table.
+		if ov, hasOverride := deployer.ComponentOverrideFor(c.Name); hasOverride {
+			cd.Behavior = overrideBehavior(cd.Behavior, ov)
+			cd.Note = overrideNote(ov)
 		}
 		if g.ClusterRollover {
 			// The endpoint comes from a different variable in each mode: a
@@ -168,12 +165,58 @@ func (g *Generator) bundleData(releases []release) bundleData {
 			if g.ChildModule {
 				endpoint = "var.cluster_endpoint"
 			}
-			rd.Behavior = append(rd.Behavior, attr{"cluster_endpoint", endpoint})
+			cd.Behavior = append(cd.Behavior, attr{"cluster_endpoint", endpoint})
 		}
-		data.Releases = append(data.Releases, rd)
-		data.ReleaseMap = append(data.ReleaseMap, attr{hclString(f.Name), hclString(f.Namespace)})
+		data.Components = append(data.Components, cd)
+		data.ComponentMap = append(data.ComponentMap, attr{hclString(c.Name), hclString(primary.Namespace)})
+		for _, f := range c.Folders() {
+			data.ReleaseMap = append(data.ReleaseMap, attr{hclString(f.Name), hclString(f.Namespace)})
+		}
 	}
 	return data
+}
+
+// headFolder is the first folder the component applies — the pre wrapper when
+// there is one. Only the head creates the namespace; by the time a later slot
+// runs it exists, and Helm 3 refuses to adopt a namespace another release
+// created out-of-band.
+func headFolder(c component) localformat.Folder {
+	if c.Pre != nil {
+		return *c.Pre
+	}
+	return c.Primary
+}
+
+// chartAttrs renders the chart coordinates: upstream name/repo/version, or a
+// path to the chart directory localformat wrote into the bundle.
+func chartAttrs(f localformat.Folder) []attr {
+	if f.Kind != localformat.KindUpstreamHelm || f.Upstream == nil {
+		return []attr{{"chart", localChartExpr(f.Dir)}}
+	}
+	out := []attr{{"chart", hclString(f.Upstream.Chart)}}
+	if f.Upstream.Repo != "" {
+		out = append(out, attr{"repository", hclString(f.Upstream.Repo)})
+	}
+	if f.Upstream.Version != "" {
+		out = append(out, attr{"chart_version", hclString(f.Upstream.Version)})
+	}
+	return out
+}
+
+// phaseAttrs renders the auxiliary slots the component actually has. An absent
+// slot is left unset so the module's count guard drops the resource.
+func phaseAttrs(c component) []attr {
+	var out []attr
+	if c.Pre != nil {
+		out = append(out, attr{"pre_chart", localChartExpr(c.Pre.Dir)})
+	}
+	if c.Post != nil {
+		out = append(out, attr{"post_chart", localChartExpr(c.Post.Dir)})
+	}
+	if c.Readiness != nil {
+		out = append(out, attr{"readiness_chart", localChartExpr(c.Readiness.Dir)})
+	}
+	return out
 }
 
 // overrideBehavior replaces the defaulted behavior arguments with the
@@ -198,8 +241,7 @@ func overrideBehavior(base []attr, ov deployer.ComponentOverride) []attr {
 }
 
 // overrideNote explains an override at its call site. A generated argument
-// that silently contradicts the bundle-wide variable is the kind of thing a
-// reader assumes is a bug.
+// that silently contradicts the bundle-wide variable reads as a bug.
 func overrideNote(ov deployer.ComponentOverride) string {
 	if !ov.Wait {
 		return "Asynchronous: helm --wait times out on this component's custom-resource\n  # readiness even though its pods start. Ordering still holds; readiness does not."
@@ -207,17 +249,32 @@ func overrideNote(ov deployer.ComponentOverride) string {
 	return "Per-component override."
 }
 
-// folderTitle is the comment above a module call: enough for a reader of
-// main.tf to know what the release is without opening its folder.
-func folderTitle(f localformat.Folder) string {
+// componentTitle is the comment above a module call: the chart folder and what
+// is in it, so a reader of main.tf need not open the directory.
+func componentTitle(c component) string {
+	f := c.Primary
+	u := f.Upstream
 	switch {
-	case f.Kind == localformat.KindUpstreamHelm && f.Upstream != nil && f.Upstream.Version != "":
-		return fmt.Sprintf("%s — %s %s", f.Dir, f.Upstream.Chart, f.Upstream.Version)
-	case f.Kind == localformat.KindUpstreamHelm && f.Upstream != nil:
-		return fmt.Sprintf("%s — %s", f.Dir, f.Upstream.Chart)
+	case f.Kind == localformat.KindUpstreamHelm && u != nil && u.Version != "":
+		return fmt.Sprintf("%s — %s %s", f.Dir, u.Chart, u.Version)
+	case f.Kind == localformat.KindUpstreamHelm && u != nil:
+		return fmt.Sprintf("%s — %s", f.Dir, u.Chart)
 	default:
 		return fmt.Sprintf("%s — chart bundled in this directory", f.Dir)
 	}
+}
+
+// extraFolders names the auxiliary folders this call also installs. They are a
+// second line rather than part of the title: most components have none, and the
+// chart is what a reader is looking for.
+func extraFolders(c component) string {
+	var dirs []string
+	for _, f := range c.Folders() {
+		if f.Dir != c.Primary.Dir {
+			dirs = append(dirs, f.Dir)
+		}
+	}
+	return strings.Join(dirs, ", ")
 }
 
 // generatedFile pairs a template with the path it renders to, relative to the

@@ -33,6 +33,24 @@ variable "chart_version" {
   default     = null
 }
 
+variable "pre_chart" {
+  description = "Path to the pre-manifest wrapper chart, or null when the component has none."
+  type        = string
+  default     = null
+}
+
+variable "post_chart" {
+  description = "Path to the post-manifest wrapper chart, or null when the component has none."
+  type        = string
+  default     = null
+}
+
+variable "readiness_chart" {
+  description = "Path to the readiness-gate wrapper chart, or null when the component ships no gate."
+  type        = string
+  default     = null
+}
+
 variable "values_files" {
   description = "Values files to layer, in order."
   type        = list(string)

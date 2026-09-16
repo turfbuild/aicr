@@ -109,10 +109,10 @@ type Generator struct {
 	// chart. Populated when --readiness-hooks is set; empty otherwise.
 	//
 	// Unlike flux and helmfile, this deployer can honor the gate without
-	// extra wiring: the gate arrives as one more folder, becomes one more
-	// module call in the component's chain, and helm_release's
-	// wait_for_jobs makes the dependent module wait for the gate Job to
-	// complete rather than merely to be submitted.
+	// extra wiring: the gate arrives as one more folder and becomes the
+	// last slot in the component's module, where wait_for_jobs blocks on
+	// the Job completing rather than merely being submitted. The slot
+	// hardcodes wait, so an async override cannot disarm the gate.
 	ComponentReadiness map[string]map[string][]byte
 
 	// DataFiles lists additional file paths (relative to output dir) to
@@ -235,12 +235,12 @@ func (g *Generator) Generate(ctx context.Context, outputDir string) (*deployer.O
 		return nil, recordErr
 	}
 
-	releases, err := buildReleases(writeResult.Folders, sortedRefs, g.Serial)
+	components, err := buildComponents(writeResult.Folders, sortedRefs, g.Serial)
 	if err != nil {
 		return nil, err
 	}
 
-	data := g.bundleData(releases)
+	data := g.bundleData(components)
 	if err := g.writeTerraform(outputDir, data, output); err != nil {
 		return nil, err
 	}
@@ -277,7 +277,8 @@ func (g *Generator) Generate(ctx context.Context, outputDir string) (*deployer.O
 	notes := []string{
 		"The bundle does not create a cluster. It reads ~/.kube/config by default; " +
 			"set kubeconfig_path/kube_context, or cluster_host and credentials, to point it elsewhere.",
-		"depends_on carries the recipe's dependency graph exactly, so independent components apply concurrently.",
+		"depends_on carries the recipe's dependency graph exactly, so independent components apply concurrently. " +
+			"Each component is one module call; its pre/post/readiness folders chain inside it.",
 	}
 	if len(g.DynamicValues) > 0 {
 		notes = append(notes,
@@ -295,8 +296,8 @@ func (g *Generator) Generate(ctx context.Context, outputDir string) (*deployer.O
 	output.DeploymentNotes = notes
 
 	slog.Debug("terraform bundle generated",
-		"components", len(sortedRefs),
-		"releases", len(releases),
+		"components", len(components),
+		"releases", len(writeResult.Folders),
 		"files", len(output.Files),
 		"size_bytes", output.TotalSize,
 		"duration", output.Duration,
