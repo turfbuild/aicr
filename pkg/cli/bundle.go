@@ -83,6 +83,11 @@ type bundleCmdOptions struct {
 	// components. Off by default (parallel). An escape hatch for operators.
 	serial bool
 
+	// terraformClusterRollover emits the cluster-rollover containment shim
+	// in a --deployer terraform bundle. Off by default. See
+	// config.WithTerraformClusterRollover for why it is not the default.
+	terraformClusterRollover bool
+
 	// attest enables bundle attestation and binary verification.
 	attest bool
 
@@ -197,6 +202,7 @@ func parseBundleCmdOptions(cmd *cli.Command, cfg *aicr.Config) (*bundleCmdOption
 		vendorCharts:              boolFlagOrConfig(cmd, "vendor-charts", bundleOpts.VendorCharts),
 		readinessHooks:            cmd.Bool("readiness-hooks"),
 		serial:                    cmd.Bool("serial"),
+		terraformClusterRollover:  cmd.Bool("terraform-cluster-rollover"),
 		certificateIdentityRegexp: stringFlagOrConfig(cmd, "certificate-identity-regexp", bundleOpts.CertIDRegexp),
 		identityToken:             cmd.String(flagIdentityToken),
 		signingKey:                stringFlagOrConfig(cmd, flagSigningKey, bundleOpts.OIDCResolve.SigningKey),
@@ -344,6 +350,13 @@ func parseBundleCmdOptions(cmd *cli.Command, cfg *aicr.Config) (*bundleCmdOption
 			return nil, errors.New(errors.ErrCodeInvalidRequest,
 				"--flux-namespace is only valid with --deployer flux")
 		}
+	}
+
+	// Reject the terraform-specific flag on other deployers, for the same
+	// reason as the flux flags above: silent acceptance with no effect.
+	if opts.deployer != config.DeployerTerraform && cmd.IsSet("terraform-cluster-rollover") {
+		return nil, errors.New(errors.ErrCodeInvalidRequest,
+			"--terraform-cluster-rollover is only valid with --deployer terraform")
 	}
 
 	// --app-name applies to argocd-helm and argocd only. Reject on other
@@ -648,6 +661,7 @@ func bundleCmd() *cli.Command {
 Use --deployer argocd to generate Argo CD Applications.
 Use --deployer flux to generate Flux HelmRelease and Kustomization manifests.
 Use --deployer helmfile to generate a helmfile.yaml release graph (apply/diff/destroy with the upstream helmfile CLI).
+Use --deployer terraform to generate a Terraform/OpenTofu root module (plan/apply with terraform or tofu).
 
 Helm:
   - README.md: Root deployment guide with ordered steps
@@ -689,6 +703,16 @@ Helmfile:
   - README.md: helmfile apply/diff/destroy walkthrough
   - checksums.txt: SHA256 checksums of generated files
 
+Terraform:
+  - main.tf: One module call per release; depends_on carries the recipe's
+    dependency graph exactly, so independent components apply concurrently
+  - versions.tf / variables.tf / outputs.tf: Provider config and the cluster
+    connection surface. The bundle does not create a cluster
+  - modules/component/: The generic one-release module every call shares
+  - NNN-<component>/: Per-component chart dirs (Chart.yaml, values.yaml)
+  - README.md: terraform init/plan/apply walkthrough
+  - checksums.txt: SHA256 checksums of generated files
+
 Examples:
 
 Generate Helm per-component bundle (default):
@@ -702,6 +726,9 @@ Generate Flux manifests:
 
 Generate Helmfile release graph:
   aicr bundle --recipe recipe.yaml --output ./my-bundle --deployer helmfile
+
+Generate a Terraform root module:
+  aicr bundle --recipe recipe.yaml --output ./my-bundle --deployer terraform
 
 Override values in generated bundle:
   aicr bundle --recipe recipe.yaml --set gpuoperator:driver.version=570.133.20
@@ -883,12 +910,23 @@ Package with explicit tag (overrides CLI version):
 				Name: "serial",
 				Usage: `Sequence components strictly one at a time in deployment order,
 	disabling the parallel rollout of independent components. Affects the
-	argocd, argocd-helm, flux, and helmfile deployers (helm is already
-	serial): argocd falls back to a linear sync-wave per folder, flux chains
-	each HelmRelease dependsOn to the previous component, and helmfile chains
-	every release via needs: into one linear apply order. An escape hatch for
+	argocd, argocd-helm, flux, helmfile, and terraform deployers (helm is
+	already serial): argocd falls back to a linear sync-wave per folder, flux
+	chains each HelmRelease dependsOn to the previous component, helmfile
+	chains every release via needs:, and terraform chains every module call
+	via depends_on, into one linear apply order. An escape hatch for
 	reproducing the pre-parallelism ordering or bisecting a misbehaving
 	rollout; off by default.`,
+				Category: catDeployment,
+			},
+			&cli.BoolFlag{
+				Name: "terraform-cluster-rollover",
+				Usage: `Emit a containment shim in each component module so replacing the
+	cluster replaces every release, instead of leaving state that describes
+	objects in a cluster that no longer exists (--deployer terraform only).
+	Off by default, and incompatible with binding the bundle to a cluster
+	created in the same configuration: deferred-action engines refuse a
+	replace_triggered_by whose referent is itself deferred.`,
 				Category: catDeployment,
 			},
 			&cli.StringFlag{
@@ -1147,6 +1185,8 @@ func runBundleCmdWithDependencies(
 		outputType = "Flux manifests"
 	case config.DeployerHelmfile:
 		outputType = "Helmfile release graph"
+	case config.DeployerTerraform:
+		outputType = "Terraform root module"
 	}
 	slog.Info("generating bundle",
 		slog.String("deployer", opts.deployer.String()),
@@ -1194,6 +1234,7 @@ func runBundleCmdWithDependencies(
 		config.WithVendorCharts(opts.vendorCharts),
 		config.WithReadinessHooks(opts.readinessHooks),
 		config.WithSerial(opts.serial),
+		config.WithTerraformClusterRollover(opts.terraformClusterRollover),
 		config.WithOCISourceName(opts.ociSourceName),
 		config.WithFluxNamespace(opts.fluxNamespace),
 		config.WithBundleChartName(opts.bundleChartName),

@@ -55,6 +55,13 @@ const (
 	// bundle is self-contained and air-gap deployable when combined with
 	// --vendor-charts.
 	DeployerHelmfile DeployerType = "helmfile"
+	// DeployerTerraform generates a Terraform/OpenTofu root module: one
+	// module call per release, with depends_on carrying the recipe's
+	// dependency graph exactly. Per-component chart directories are
+	// emitted via the shared localformat writer, so the bundle is
+	// self-contained and air-gap deployable when combined with
+	// --vendor-charts.
+	DeployerTerraform DeployerType = "terraform"
 )
 
 // allDeployerTypes is the single source of truth for supported deployer types.
@@ -64,6 +71,7 @@ var allDeployerTypes = []DeployerType{
 	DeployerArgoCDHelm,
 	DeployerFlux,
 	DeployerHelmfile,
+	DeployerTerraform,
 }
 
 // ParseDeployerType parses a string into a DeployerType.
@@ -343,6 +351,17 @@ type Config struct {
 	// flag is a no-op for it.
 	serial bool
 
+	// terraformClusterRollover emits, in each component module of a
+	// --deployer terraform bundle, a null_resource keyed on the cluster
+	// endpoint plus a replace_triggered_by pointing at it, so replacing the
+	// cluster replaces every release rather than leaving state that
+	// describes objects in a cluster that no longer exists. Off by default:
+	// current Terraform deferred-action builds refuse a replace_triggered_by
+	// whose referent is itself deferred, which is exactly the shape an
+	// unknown cluster connection produces, so the shim and the
+	// cluster-in-the-same-configuration path are mutually exclusive there.
+	terraformClusterRollover bool
+
 	// bundlers is a positive filter on recipe component names (the
 	// `bundlers` query parameter on POST /v1/bundle): when non-empty, only
 	// the named components are bundled; every other enabled component is
@@ -593,6 +612,13 @@ func (c *Config) ReadinessHooks() bool {
 // and helmfile deployers (helm is already serial).
 func (c *Config) Serial() bool {
 	return c.serial
+}
+
+// TerraformClusterRollover reports whether the terraform deployer should emit
+// the cluster-rollover containment shim in each component module. Off by
+// default; opt-in via --terraform-cluster-rollover.
+func (c *Config) TerraformClusterRollover() bool {
+	return c.terraformClusterRollover
 }
 
 // Bundlers returns a copy of the positive component-name filter. Empty means
@@ -925,6 +951,15 @@ func WithReadinessHooks(enabled bool) Option {
 func WithSerial(enabled bool) Option {
 	return func(c *Config) {
 		c.serial = enabled
+	}
+}
+
+// WithTerraformClusterRollover enables the cluster-rollover containment shim
+// in a --deployer terraform bundle. Off by default; opt-in via
+// --terraform-cluster-rollover.
+func WithTerraformClusterRollover(enabled bool) Option {
+	return func(c *Config) {
+		c.terraformClusterRollover = enabled
 	}
 }
 

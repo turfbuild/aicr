@@ -24,6 +24,7 @@ re-render the same recipe for whatever pipeline you run:
 | `argocd` | Argo CD `Application` manifests (app-of-apps), published from a Git repo (`--repo`). |
 | `argocd-helm` | A Helm chart app-of-apps; `repoURL` defaults to the push-target registry — plain `helm install` works with no `--set repoURL` needed. Override with `--set repoURL=oci://mirror` when mirroring. Bringing your own root Application? Set `deployer.includeRootApp=false` to render children-only — see [Argo CD Deployer Options](cli-reference.md#argo-cd-deployer-options). |
 | `flux` | Flux `HelmRelease` and `Kustomization` manifests. |
+| `terraform` | A Terraform/OpenTofu root module: one module call per release, with `depends_on` carrying the recipe's dependency graph. |
 
 ```bash
 # GitOps with Argo CD, sourced from your config repo
@@ -40,7 +41,7 @@ shown here will not disappear or be renamed without a deliberate, reviewed
 change. Automation may read these paths.
 
 Every deployer writes `checksums.txt`, `README.md` and `recipe.yaml` at the
-bundle root. Four of the five group components into ordered `NNN-<component>`
+bundle root. All but one group components into ordered `NNN-<component>`
 directories; Flux is the exception and uses a plain `<component>` directory
 with shared `sources/`.
 
@@ -70,6 +71,27 @@ helmfile/
   002-nfd/
   helmfile.yaml
   level-N.yaml                 one per dependency depth; absent when flat
+  recipe.yaml
+  checksums.txt
+  README.md
+```
+
+`terraform` also shares Helm's per-component files, and adds the Terraform
+layer above them: a root module whose module calls mirror the folders
+one-for-one, plus the single generic component module they all share. The
+bundle does not create a cluster — it configures the `helm` provider from
+variables, so it applies against whatever cluster you point it at.
+
+```text
+terraform/
+  001-cert-manager/            same four files as helm
+  002-nfd/
+  main.tf                      one module call per release; the dependency graph
+  versions.tf                  required_providers + the helm provider config
+  variables.tf                 cluster connection, wait/timeout/atomic
+  outputs.tf
+  terraform.tfvars.example
+  modules/component/           the generic one-release module every call shares
   recipe.yaml
   checksums.txt
   README.md
