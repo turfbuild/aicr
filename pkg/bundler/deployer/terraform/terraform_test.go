@@ -123,6 +123,41 @@ func TestGenerate_Scenarios(t *testing.T) {
 			},
 		},
 		{
+			// A component the shared override table marks asynchronous
+			// carries literal wait/timeout arguments instead of the
+			// bundle-wide variables, with the reason inline. Rendering it
+			// as var.wait would let an operator silently re-enable a wait
+			// that is known to time out.
+			name: "async_component",
+			gen: func() *Generator {
+				gpu := ref("gpu-operator", "gpu-operator", "gpu-operator", "v25.3.3", "https://helm.ngc.nvidia.com/nvidia")
+				kai := ref("kai-scheduler", "kai-scheduler", "kai-scheduler", "v0.16.9", "oci://ghcr.io/kai-scheduler/kai-scheduler")
+				kai.DependencyRefs = []string{"gpu-operator"}
+				return &Generator{
+					RecipeResult: recipeWith(gpu, kai),
+					Version:      testBundlerVersion,
+				}
+			}(),
+			goldens: []string{fileMain},
+		},
+		{
+			// Child-module form: no provider block, no connection
+			// variables, no tfvars example. The rollover shim's trigger
+			// moves to cluster_endpoint, since a child module has no
+			// cluster_host of its own.
+			name: "child_module",
+			gen: func() *Generator {
+				cm := ref("cert-manager", "cert-manager", "cert-manager", "v1.17.2", "https://charts.jetstack.io")
+				return &Generator{
+					RecipeResult:    recipeWith(cm),
+					Version:         testBundlerVersion,
+					ChildModule:     true,
+					ClusterRollover: true,
+				}
+			}(),
+			goldens: []string{fileMain, fileVersions, fileVars},
+		},
+		{
 			// A component with dynamic value paths gets cluster-values.yaml
 			// layered after values.yaml, so operator edits win.
 			name: "dynamic_values",
@@ -156,6 +191,15 @@ func TestGenerate_Scenarios(t *testing.T) {
 			assertFmtStable(t, filepath.Join(outputDir, fileMain))
 			for _, rel := range sc.goldens {
 				assertGolden(t, outputDir, filepath.Join("testdata", sc.name), rel)
+			}
+			// A child module is configured by its caller's module block, so
+			// a tfvars example would be a file nothing can read.
+			_, statErr := os.Stat(filepath.Join(outputDir, fileTfvars))
+			if sc.gen.ChildModule && statErr == nil {
+				t.Errorf("child-module bundle emitted %s", fileTfvars)
+			}
+			if !sc.gen.ChildModule && statErr != nil {
+				t.Errorf("root-module bundle is missing %s: %v", fileTfvars, statErr)
 			}
 		})
 	}

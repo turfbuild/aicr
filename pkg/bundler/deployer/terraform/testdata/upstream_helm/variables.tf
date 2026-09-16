@@ -49,6 +49,7 @@ variable "cluster_token" {
   sensitive   = true
 }
 
+
 variable "wait" {
   description = <<-EOT
     Wait for each release's workloads to become ready before the resource is

@@ -141,6 +141,19 @@ type Generator struct {
 	// connection path produces. The two cannot be combined on that engine.
 	ClusterRollover bool
 
+	// ChildModule emits the bundle as a CHILD module rather than a root
+	// module: no provider configuration, and no cluster-connection
+	// variables to feed one. The calling configuration declares and
+	// configures the helm provider, and the bundle's module calls inherit
+	// it the way any child module does.
+	//
+	// This is the shape to use when the cluster is declared in the same
+	// configuration as the bundle. A module that carries its own provider
+	// block is a legacy construct — Terraform still accepts it but
+	// disallows count/for_each/depends_on on the call, and other engines
+	// refuse to walk it outright.
+	ChildModule bool
+
 	// Serial replaces the declared dependency graph with a single linear
 	// chain, so releases apply strictly one at a time regardless of the
 	// recipe's actual edges. Off by default; wired from --serial.

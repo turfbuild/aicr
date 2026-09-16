@@ -35,6 +35,7 @@ type bundleData struct {
 	Version         string
 	Criteria        string
 	ClusterRollover bool
+	ChildModule     bool
 	Serial          bool
 	Releases        []releaseData
 
@@ -42,6 +43,12 @@ type bundleData struct {
 	// namespace, aligned like any other argument group.
 	ReleaseMap []attr
 }
+
+// Argument names this package emits in more than one place.
+const (
+	argWait    = "wait"
+	argTimeout = "timeout"
+)
 
 // attr is one `name = expression` line. Value is already a rendered HCL
 // expression — quoted, interpolated, or a bare literal — because the caller
@@ -69,6 +76,9 @@ type releaseData struct {
 	Behavior    []attr // atomic, wait, timeout, and the rollover trigger
 	ValuesFiles []string
 	DependsOn   []string
+	// Note is an inline comment above the behavior group, explaining a
+	// per-component override. Empty when the component takes the defaults.
+	Note string
 }
 
 // align renders a group of arguments as `terraform fmt` would: one line each,
@@ -104,6 +114,7 @@ func (g *Generator) bundleData(releases []release) bundleData {
 		Version:         g.Version,
 		Criteria:        criteria,
 		ClusterRollover: g.ClusterRollover,
+		ChildModule:     g.ChildModule,
 		Serial:          g.Serial,
 		Releases:        make([]releaseData, 0, len(releases)),
 	}
@@ -121,8 +132,8 @@ func (g *Generator) bundleData(releases []release) bundleData {
 			},
 			Behavior: []attr{
 				{"atomic", "var.atomic"},
-				{"wait", "var.wait"},
-				{"timeout", "var.timeout"},
+				{argWait, "var.wait"},
+				{argTimeout, "var.timeout"},
 			},
 			ValuesFiles: valuesFilesForFolder(f, g.DynamicValues[f.Parent]),
 			DependsOn:   r.DependsOn,
@@ -138,13 +149,62 @@ func (g *Generator) bundleData(releases []release) bundleData {
 		} else {
 			rd.Chart = []attr{{"chart", localChartExpr(f.Dir)}}
 		}
+		// Per-component overrides, keyed by the PARENT component so a
+		// primary release and its injected folders agree. Rendered as
+		// literals rather than var references: they are facts about the
+		// component, not knobs, and an operator who flips var.wait for the
+		// bundle must not silently re-enable a wait that is known to time
+		// out. deploy.sh and the helmfile deployer make the same override.
+		if ov, hasOverride := deployer.ComponentOverrideFor(f.Parent); hasOverride {
+			rd.Behavior = overrideBehavior(rd.Behavior, ov)
+			rd.Note = overrideNote(ov)
+		}
 		if g.ClusterRollover {
-			rd.Behavior = append(rd.Behavior, attr{"cluster_endpoint", "var.cluster_host"})
+			// The endpoint comes from a different variable in each mode: a
+			// root module already has cluster_host for its own provider
+			// config, while a child module has no connection variables at
+			// all and takes cluster_endpoint purely for the shim.
+			endpoint := "var.cluster_host"
+			if g.ChildModule {
+				endpoint = "var.cluster_endpoint"
+			}
+			rd.Behavior = append(rd.Behavior, attr{"cluster_endpoint", endpoint})
 		}
 		data.Releases = append(data.Releases, rd)
 		data.ReleaseMap = append(data.ReleaseMap, attr{hclString(f.Name), hclString(f.Namespace)})
 	}
 	return data
+}
+
+// overrideBehavior replaces the defaulted behavior arguments with the
+// component's own values.
+func overrideBehavior(base []attr, ov deployer.ComponentOverride) []attr {
+	out := make([]attr, 0, len(base))
+	for _, a := range base {
+		switch a.Name {
+		case argWait:
+			out = append(out, attr{argWait, strconv.FormatBool(ov.Wait)})
+		case argTimeout:
+			if ov.TimeoutSeconds > 0 {
+				out = append(out, attr{argTimeout, strconv.Itoa(ov.TimeoutSeconds)})
+				continue
+			}
+			out = append(out, a)
+		default:
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// overrideNote explains an override at its call site. A generated argument
+// that silently contradicts the bundle-wide variable is the kind of thing a
+// reader assumes is a bug.
+func overrideNote(ov deployer.ComponentOverride) string {
+	if !ov.Wait {
+		return "Asynchronous: helm --wait times out on this component's custom-resource\n  # readiness even though its pods start. Ordering still holds; readiness does not."
+	}
+	return "Per-component override."
 }
 
 // folderTitle is the comment above a module call: enough for a reader of
@@ -175,11 +235,15 @@ func (g *Generator) writeTerraform(outputDir string, data bundleData, output *de
 		{fileVersions, versionsTemplate},
 		{fileVars, variablesTemplate},
 		{fileOutputs, outputsTemplate},
-		{fileTfvars, tfvarsTemplate},
 		{fileReadme, readmeTemplate},
 		{filepath.Join(moduleDir, "main.tf"), moduleMainTemplate},
 		{filepath.Join(moduleDir, "variables.tf"), moduleVariablesTemplate},
 		{filepath.Join(moduleDir, "outputs.tf"), moduleOutputsTemplate},
+	}
+	// terraform.tfvars.example is a root-module artifact: a child module is
+	// configured by its caller's module block, not by a tfvars file.
+	if !g.ChildModule {
+		files = append(files, generatedFile{fileTfvars, tfvarsTemplate})
 	}
 
 	for _, gf := range files {

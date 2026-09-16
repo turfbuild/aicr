@@ -123,6 +123,7 @@ func TestBundleCmd_NewConfigMatchesBundlerConfigFields(t *testing.T) {
 		// artifacts rather than the bundler's own configuration, so it has
 		// no spec.bundle counterpart.
 		"WithTerraformClusterRollover": true,
+		"WithTerraformChildModule":     true,
 		"WithOCISourceName":            true,
 		"WithFluxNamespace":            true,
 		"WithBundleChartName":          true,

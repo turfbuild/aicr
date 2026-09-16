@@ -77,10 +77,12 @@ helmfile/
 ```
 
 `terraform` also shares Helm's per-component files, and adds the Terraform
-layer above them: a root module whose module calls mirror the folders
-one-for-one, plus the single generic component module they all share. The
-bundle does not create a cluster — it configures the `helm` provider from
-variables, so it applies against whatever cluster you point it at.
+layer above them: a module call per folder, one-for-one, plus the single
+generic component module they all share. The bundle does not create a cluster.
+By default it is a root module that configures the `helm` provider from
+variables, so it applies against whatever cluster you point it at; with
+`--terraform-child-module` it is a child module with no provider block, for
+calling from a configuration that creates the cluster itself.
 
 ```text
 terraform/
@@ -90,7 +92,7 @@ terraform/
   versions.tf                  required_providers + the helm provider config
   variables.tf                 cluster connection, wait/timeout/atomic
   outputs.tf
-  terraform.tfvars.example
+  terraform.tfvars.example     root-module form only
   modules/component/           the generic one-release module every call shares
   recipe.yaml
   checksums.txt

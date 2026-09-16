@@ -15,11 +15,11 @@ terraform {
 #
 #   * leave var.cluster_host unset and the provider reads var.kubeconfig_path
 #     (the default, ~/.kube/config) with var.kube_context;
-#   * set var.cluster_host and friends from a cluster resource declared in the
-#     configuration that consumes this bundle. Those attributes are unknown
-#     until the cluster is created, which makes every release in the bundle
-#     unplannable on the first pass. An engine with deferred actions converges
-#     that in two rounds; stock `terraform apply` needs the cluster first.
+#   * regenerate with --terraform-child-module and call this directory from a
+#     configuration that declares the cluster and configures the provider.
+#     A module carrying its own provider block cannot take depends_on,
+#     count or for_each, and some engines refuse to walk one at all — so
+#     composing is a different shape, not a different argument.
 provider "helm" {
   kubernetes = {
     config_path    = var.cluster_host == null ? var.kubeconfig_path : null

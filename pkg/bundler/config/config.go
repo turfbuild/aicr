@@ -362,6 +362,14 @@ type Config struct {
 	// cluster-in-the-same-configuration path are mutually exclusive there.
 	terraformClusterRollover bool
 
+	// terraformChildModule emits a --deployer terraform bundle as a CHILD
+	// module — no provider configuration, no cluster-connection variables —
+	// so the calling configuration owns the provider and the bundle's module
+	// calls inherit it. The shape to use when the cluster is declared
+	// alongside the bundle: a module carrying its own provider block cannot
+	// take depends_on/count/for_each, and some engines refuse to walk one.
+	terraformChildModule bool
+
 	// bundlers is a positive filter on recipe component names (the
 	// `bundlers` query parameter on POST /v1/bundle): when non-empty, only
 	// the named components are bundled; every other enabled component is
@@ -619,6 +627,13 @@ func (c *Config) Serial() bool {
 // default; opt-in via --terraform-cluster-rollover.
 func (c *Config) TerraformClusterRollover() bool {
 	return c.terraformClusterRollover
+}
+
+// TerraformChildModule reports whether the terraform deployer should emit the
+// bundle as a child module rather than a standalone root module. Off by
+// default; opt-in via --terraform-child-module.
+func (c *Config) TerraformChildModule() bool {
+	return c.terraformChildModule
 }
 
 // Bundlers returns a copy of the positive component-name filter. Empty means
@@ -960,6 +975,15 @@ func WithSerial(enabled bool) Option {
 func WithTerraformClusterRollover(enabled bool) Option {
 	return func(c *Config) {
 		c.terraformClusterRollover = enabled
+	}
+}
+
+// WithTerraformChildModule emits a --deployer terraform bundle as a child
+// module instead of a root module. Off by default; opt-in via
+// --terraform-child-module.
+func WithTerraformChildModule(enabled bool) Option {
+	return func(c *Config) {
+		c.terraformChildModule = enabled
 	}
 }
 

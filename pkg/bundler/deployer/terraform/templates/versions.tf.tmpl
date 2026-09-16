@@ -16,16 +16,39 @@ terraform {
 {{- end }}
   }
 }
-
+{{ if .ChildModule }}
+# No provider block: this bundle is a CHILD MODULE. The calling configuration
+# declares and configures the helm provider, and these module calls inherit it.
+#
+# That is what makes the cluster-in-the-same-configuration case work. The
+# caller can point the provider straight at a cluster resource's attributes:
+#
+#   provider "helm" {
+#     kubernetes = {
+#       host                   = kind_cluster.dc.endpoint
+#       cluster_ca_certificate = kind_cluster.dc.cluster_ca_certificate
+#       client_certificate     = kind_cluster.dc.client_certificate
+#       client_key             = kind_cluster.dc.client_key
+#     }
+#   }
+#
+#   module "stack" {
+#     source = "./bundle"
+#   }
+#
+# Those attributes are unknown until the cluster is created, so on the first
+# pass every release here is unplannable. An engine with deferred actions
+# converges that in two rounds; stock `terraform apply` needs the cluster first.
+{{- else }}
 # The bundle does not create a cluster. Point it at one of two ways:
 #
 #   * leave var.cluster_host unset and the provider reads var.kubeconfig_path
 #     (the default, ~/.kube/config) with var.kube_context;
-#   * set var.cluster_host and friends from a cluster resource declared in the
-#     configuration that consumes this bundle. Those attributes are unknown
-#     until the cluster is created, which makes every release in the bundle
-#     unplannable on the first pass. An engine with deferred actions converges
-#     that in two rounds; stock `terraform apply` needs the cluster first.
+#   * regenerate with --terraform-child-module and call this directory from a
+#     configuration that declares the cluster and configures the provider.
+#     A module carrying its own provider block cannot take depends_on,
+#     count or for_each, and some engines refuse to walk one at all — so
+#     composing is a different shape, not a different argument.
 provider "helm" {
   kubernetes = {
     config_path    = var.cluster_host == null ? var.kubeconfig_path : null
@@ -38,3 +61,4 @@ provider "helm" {
     token                  = var.cluster_token
   }
 }
+{{- end }}

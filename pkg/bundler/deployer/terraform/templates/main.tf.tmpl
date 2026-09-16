@@ -23,7 +23,8 @@ module "{{ .Label }}" {
 {{- end }}
   ]
 
-{{ align "  " .Behavior }}
+{{ if .Note }}  # {{ .Note }}
+{{ end }}{{ align "  " .Behavior }}
 {{- if .DependsOn }}
 
   depends_on = [

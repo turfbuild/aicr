@@ -1127,6 +1127,7 @@ func (b *DefaultBundler) terraformDeployer(
 		DynamicValues:          dynamicValues,
 		VendorCharts:           b.Config.VendorCharts(),
 		ClusterRollover:        b.Config.TerraformClusterRollover(),
+		ChildModule:            b.Config.TerraformChildModule(),
 		Serial:                 b.Config.Serial(),
 	}, nil
 }

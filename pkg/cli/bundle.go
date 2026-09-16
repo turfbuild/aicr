@@ -88,6 +88,10 @@ type bundleCmdOptions struct {
 	// config.WithTerraformClusterRollover for why it is not the default.
 	terraformClusterRollover bool
 
+	// terraformChildModule emits a --deployer terraform bundle as a child
+	// module rather than a root module. Off by default.
+	terraformChildModule bool
+
 	// attest enables bundle attestation and binary verification.
 	attest bool
 
@@ -203,6 +207,7 @@ func parseBundleCmdOptions(cmd *cli.Command, cfg *aicr.Config) (*bundleCmdOption
 		readinessHooks:            cmd.Bool("readiness-hooks"),
 		serial:                    cmd.Bool("serial"),
 		terraformClusterRollover:  cmd.Bool("terraform-cluster-rollover"),
+		terraformChildModule:      cmd.Bool("terraform-child-module"),
 		certificateIdentityRegexp: stringFlagOrConfig(cmd, "certificate-identity-regexp", bundleOpts.CertIDRegexp),
 		identityToken:             cmd.String(flagIdentityToken),
 		signingKey:                stringFlagOrConfig(cmd, flagSigningKey, bundleOpts.OIDCResolve.SigningKey),
@@ -354,9 +359,15 @@ func parseBundleCmdOptions(cmd *cli.Command, cfg *aicr.Config) (*bundleCmdOption
 
 	// Reject the terraform-specific flag on other deployers, for the same
 	// reason as the flux flags above: silent acceptance with no effect.
-	if opts.deployer != config.DeployerTerraform && cmd.IsSet("terraform-cluster-rollover") {
-		return nil, errors.New(errors.ErrCodeInvalidRequest,
-			"--terraform-cluster-rollover is only valid with --deployer terraform")
+	if opts.deployer != config.DeployerTerraform {
+		if cmd.IsSet("terraform-cluster-rollover") {
+			return nil, errors.New(errors.ErrCodeInvalidRequest,
+				"--terraform-cluster-rollover is only valid with --deployer terraform")
+		}
+		if cmd.IsSet("terraform-child-module") {
+			return nil, errors.New(errors.ErrCodeInvalidRequest,
+				"--terraform-child-module is only valid with --deployer terraform")
+		}
 	}
 
 	// --app-name applies to argocd-helm and argocd only. Reject on other
@@ -929,6 +940,17 @@ Package with explicit tag (overrides CLI version):
 	replace_triggered_by whose referent is itself deferred.`,
 				Category: catDeployment,
 			},
+			&cli.BoolFlag{
+				Name: "terraform-child-module",
+				Usage: `Emit the bundle as a child module rather than a standalone root
+	module: no provider configuration and no cluster-connection variables, so
+	the calling configuration owns the provider and the module calls inherit
+	it (--deployer terraform only). Use this when the cluster is declared in
+	the same configuration as the bundle — a module carrying its own provider
+	block cannot take depends_on, count or for_each, and some engines refuse
+	to walk one at all.`,
+				Category: catDeployment,
+			},
 			&cli.StringFlag{
 				Name: "flux-oci-source-name",
 				Usage: "Name of the OCIRepository CR that Flux uses to pull the bundle " +
@@ -1235,6 +1257,7 @@ func runBundleCmdWithDependencies(
 		config.WithReadinessHooks(opts.readinessHooks),
 		config.WithSerial(opts.serial),
 		config.WithTerraformClusterRollover(opts.terraformClusterRollover),
+		config.WithTerraformChildModule(opts.terraformChildModule),
 		config.WithOCISourceName(opts.ociSourceName),
 		config.WithFluxNamespace(opts.fluxNamespace),
 		config.WithBundleChartName(opts.bundleChartName),

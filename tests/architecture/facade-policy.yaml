@@ -148,6 +148,7 @@ constrained:
       WithStorageClass: behavioral
       WithSystemNodeSelector: behavioral
       WithSystemNodeTolerations: behavioral
+      WithTerraformChildModule: behavioral
       WithTerraformClusterRollover: behavioral
       WithTargetRevision: behavioral
       WithValueOverridePaths: behavioral
