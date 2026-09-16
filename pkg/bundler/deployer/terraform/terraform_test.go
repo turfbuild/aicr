@@ -401,6 +401,46 @@ func stripComments(hcl string) string {
 	return strings.Join(kept, "\n")
 }
 
+// TestGenerate_GateIsReplacedWhenItsComponentChanges locks the idempotency
+// rule. A Job's spec.template is immutable, so an unchanged gate release can
+// never re-run its Job: helm's upgrade patch is a no-op, and Terraform does not
+// even diff the release unless the chart version or values move. The gate would
+// therefore assert readiness once, at creation, and every later apply of a
+// CHANGED component would proceed on a stale assertion.
+//
+// Replacing the gate when helm_release.this's metadata changes is uninstall +
+// install, which creates a new Job. It is expressible only because the gate and
+// the chart are resources in ONE module; with a module call per folder the
+// parent's metadata would have to be threaded out through an output.
+func TestGenerate_GateIsReplacedWhenItsComponentChanges(t *testing.T) {
+	gpu := ref("gpu-operator", "gpu-operator", "gpu-operator", "v25.3.3", "https://helm.ngc.nvidia.com/nvidia")
+	g := &Generator{
+		RecipeResult:       recipeWith(gpu),
+		Version:            testBundlerVersion,
+		ComponentReadiness: map[string]map[string][]byte{"gpu-operator": {"readiness.yaml": gateJob}},
+	}
+	outputDir := t.TempDir()
+	if _, err := g.Generate(context.Background(), outputDir); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	mod := readFile(t, filepath.Join(outputDir, moduleDir, "main.tf"))
+	at := strings.Index(mod, `resource "helm_release" "readiness"`)
+	if at < 0 {
+		t.Fatalf("module has no readiness slot:\n%s", mod)
+	}
+	gate := stripComments(mod[at:])
+
+	if !strings.Contains(gate, "replace_triggered_by") || !strings.Contains(gate, "helm_release.this.metadata") {
+		t.Errorf("the gate is not replaced when its component changes, so it asserts readiness once:\n%s", gate)
+	}
+	// create_before_destroy would install the replacement while the old release
+	// still holds the name, in the same cluster. There is also nothing in a
+	// completed Job worth keeping alive across the swap.
+	if strings.Contains(gate, "create_before_destroy") {
+		t.Errorf("the gate uses create_before_destroy; the replacement would collide on the release name:\n%s", gate)
+	}
+}
+
 func TestHCLString(t *testing.T) {
 	cases := map[string]string{
 		`plain`:             `"plain"`,

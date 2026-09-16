@@ -74,9 +74,24 @@ deployer.ComponentOverrideFor) cannot disarm its own gate.
 
 The gate is a plain Job, not a helm hook: localformat's stripHelmHooks removes
 sync-phase hook annotations from every local-chart folder, and wait_for_jobs is
-what blocks on completion. One consequence is that Terraform re-runs the gate
-only when the gate release itself diffs — unlike deploy.sh, which reinstalls
-unconditionally, and argocd, which replaces the Job on every sync.
+what blocks on completion.
+
+The slot is also replace_triggered_by the component's own release. An assertion
+is only true of the thing it was made about, and a Job cannot be re-run in place
+— spec.template is immutable, so helm's upgrade patch is a no-op and the Job
+keeps its identity. Nor does anything else reach it: helm_release tracks a local
+chart's path, version and values, not its rendered manifests, so editing the
+gate's own template produces no diff at all. Replacing the release is uninstall
++ install, which creates a new Job. The gate therefore re-runs exactly when its
+component changes, and not otherwise.
+
+No create_before_destroy on that slot: the replacement targets the same cluster
+and would collide on the release name, and a completed Job has nothing worth
+keeping alive across the swap.
+
+This is expressible only because the gate and the chart are resources in ONE
+module. With a module call per folder, the parent's metadata would have to be
+threaded out through an output and back into a sibling call.
 
 # Cluster connection
 

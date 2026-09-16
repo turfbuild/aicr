@@ -106,4 +106,15 @@ resource "helm_release" "readiness" {
   timeout       = var.timeout
 
   depends_on = [helm_release.this, helm_release.post]
+
+  # An assertion is only true of the thing it was made about. Replacing the gate
+  # when the component's release changes re-runs the Job — a Job cannot be
+  # re-run in place, its spec.template is immutable. No create_before_destroy:
+  # the replacement targets the same cluster and would collide on the release
+  # name, and there is nothing here worth keeping alive across the swap.
+  lifecycle {
+    replace_triggered_by = [
+      helm_release.this.metadata,
+    ]
+  }
 }
