@@ -197,6 +197,13 @@ func jobMetadataAnnotations(deployer config.DeployerType) string {
 		// detection, so an image-tag-only bump could silently go undetected.
 		return `  annotations:
     argocd.argoproj.io/sync-options: Replace=true,Force=true`
+	case config.DeployerTerraform:
+		// No annotation. The gate is its own helm_release in its own module
+		// call, and helm_release's wait_for_jobs blocks that resource until
+		// the Job completes; every dependent module already depends_on the
+		// tail of this component's chain, which is the gate. A helm.sh/hook
+		// annotation would buy nothing here.
+		return ""
 	case config.DeployerFlux, config.DeployerHelmfile:
 		return ""
 	default:
