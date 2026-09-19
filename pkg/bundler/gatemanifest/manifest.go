@@ -168,7 +168,12 @@ func componentClusterRoleRules(componentName string) string {
 
 func jobMetadataAnnotations(deployer config.DeployerType) string {
 	switch deployer {
-	case config.DeployerHelm:
+	case config.DeployerHelm, config.DeployerTerraform:
+		// Both install the gate through Helm itself, so the hook is what
+		// makes it re-assert: a Job's spec.template is immutable, and
+		// before-hook-creation is the only thing that deletes and recreates
+		// it on upgrade. Helm also blocks on hook completion as part of the
+		// release, which is what the terraform module's dependents depend on.
 		return `  annotations:
     helm.sh/hook: post-install,post-upgrade
     helm.sh/hook-delete-policy: before-hook-creation`
@@ -197,13 +202,6 @@ func jobMetadataAnnotations(deployer config.DeployerType) string {
 		// detection, so an image-tag-only bump could silently go undetected.
 		return `  annotations:
     argocd.argoproj.io/sync-options: Replace=true,Force=true`
-	case config.DeployerTerraform:
-		// No annotation. The gate is its own helm_release in its own module
-		// call, and helm_release's wait_for_jobs blocks that resource until
-		// the Job completes; every dependent module already depends_on the
-		// tail of this component's chain, which is the gate. A helm.sh/hook
-		// annotation would buy nothing here.
-		return ""
 	case config.DeployerFlux, config.DeployerHelmfile:
 		return ""
 	default:

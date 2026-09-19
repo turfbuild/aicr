@@ -383,8 +383,50 @@ func TestGenerate_AsyncOverrideDoesNotDisarmTheGate(t *testing.T) {
 	if strings.Contains(gate, "var.wait") {
 		t.Errorf("the readiness slot reads var.wait, so an async component disarms its own gate:\n%s", gate)
 	}
-	if !strings.Contains(gate, "wait_for_jobs = true") {
-		t.Errorf("the readiness slot does not block on the gate Job:\n%s", gate)
+	if !strings.Contains(gate, "wait    = true") {
+		t.Errorf("the readiness slot does not wait, so it does not gate:\n%s", gate)
+	}
+	// The gate blocks as a helm hook, not as a tracked Job. wait_for_jobs
+	// covers the release's own resource set, which a hook is not, so its
+	// presence here would be inert decoration -- and deploy.sh omits the
+	// same flag on the same release for the same reason.
+	if strings.Contains(gate, "wait_for_jobs") {
+		t.Errorf("the readiness slot carries an inert wait_for_jobs:\n%s", gate)
+	}
+}
+
+// TestGenerate_GateKeepsItsHookAnnotations pins the half of the gate contract
+// that lives outside this package. gatemanifest annotates the gate Job as a
+// helm hook; localformat strips helm.sh/hook* from every folder it writes
+// EXCEPT the readiness phase. Narrow that exemption to one deployer and this
+// gate silently stops re-asserting on upgrade, because a Job's spec.template
+// is immutable and nothing else deletes and recreates it.
+func TestGenerate_GateKeepsItsHookAnnotations(t *testing.T) {
+	gpu := ref("gpu-operator", "gpu-operator", "gpu-operator", "v25.3.0", "https://helm.ngc.nvidia.com/nvidia")
+	g := &Generator{
+		RecipeResult:       recipeWith(gpu),
+		Version:            testBundlerVersion,
+		ComponentReadiness: map[string]map[string][]byte{"gpu-operator": {"readiness.yaml": annotatedGateJob}},
+	}
+	outputDir := t.TempDir()
+	if _, err := g.Generate(context.Background(), outputDir); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(outputDir, "*-readiness", "templates", "*.yaml"))
+	if globErr != nil {
+		t.Fatalf("glob gate manifest: %v", globErr)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected exactly one rendered gate manifest, got %v", matches)
+	}
+	job := readFile(t, matches[0])
+	for _, want := range []string{
+		"helm.sh/hook: post-install,post-upgrade",
+		"helm.sh/hook-delete-policy: before-hook-creation",
+	} {
+		if !strings.Contains(job, want) {
+			t.Errorf("the shipped gate lost %q:\n%s", want, job)
+		}
 	}
 }
 
@@ -528,6 +570,10 @@ var (
 	gateJob = []byte("apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: gate\n  namespace: '{{ .Release.Namespace }}'\nspec:\n  template:\n    spec:\n      restartPolicy: Never\n      containers:\n        - name: gate\n          image: ghcr.io/nvidia/aicr-gate:latest\n")
 
 	manifestDoc = []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: placeholder\n")
+
+	// annotatedGateJob is what gatemanifest.Render actually emits for this
+	// deployer: a Job annotated as a post-install/post-upgrade helm hook.
+	annotatedGateJob = []byte("apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: gate\n  namespace: '{{ .Release.Namespace }}'\n  annotations:\n    helm.sh/hook: post-install,post-upgrade\n    helm.sh/hook-delete-policy: before-hook-creation\nspec:\n  template:\n    spec:\n      restartPolicy: Never\n      containers:\n        - name: gate\n          image: ghcr.io/nvidia/aicr-gate:latest\n")
 )
 
 func ref(name, ns, chart, version, source string) recipe.ComponentRef {

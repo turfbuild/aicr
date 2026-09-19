@@ -110,9 +110,9 @@ type Generator struct {
 	//
 	// Unlike flux and helmfile, this deployer can honor the gate without
 	// extra wiring: the gate arrives as one more folder and becomes the
-	// last slot in the component's module, where wait_for_jobs blocks on
-	// the Job completing rather than merely being submitted. The slot
-	// hardcodes wait, so an async override cannot disarm the gate.
+	// last slot in the component's module, which blocks until the Job
+	// completes. The slot hardcodes wait, so an async override cannot
+	// disarm the gate.
 	ComponentReadiness map[string]map[string][]byte
 
 	// DataFiles lists additional file paths (relative to output dir) to

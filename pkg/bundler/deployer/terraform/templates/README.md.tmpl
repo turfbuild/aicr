@@ -102,7 +102,8 @@ is a CR condition — `ClusterPolicy.status.state=ready`,
 `NicClusterPolicy.status.state=ready` — will report applied while that
 condition is still pending. Regenerate with `--readiness-hooks` to get an
 explicit gate: each gated component grows a `-readiness` release whose Job
-blocks the dependents, and `wait_for_jobs` makes Terraform honor it.
+blocks the dependents until the signal actually passes, and which re-runs
+whenever that release is upgraded.
 
 ## Layout
 

@@ -68,22 +68,28 @@ see the recipe graph without opening the module.
 
 With ComponentReadiness set, a component's gate is the last slot in its module:
 a Job asserting the signal that actually means ready, which helm's own wait
-cannot see. The slot hardcodes wait and wait_for_jobs rather than reading
-var.wait, so a component carrying an async override (see
-deployer.ComponentOverrideFor) cannot disarm its own gate.
+cannot see. The slot hardcodes wait rather than reading var.wait, so a
+component carrying an async override (see deployer.ComponentOverrideFor)
+cannot disarm its own gate.
 
-The gate is a plain Job, not a helm hook: localformat's stripHelmHooks removes
-sync-phase hook annotations from every local-chart folder, and wait_for_jobs is
-what blocks on completion. That is enough to make the gate a gate — the apply
-does not return, and dependents do not start, until the Job succeeds, and a
-failing gate fails the apply.
+The gate Job carries the same helm.sh/hook annotations the helm deployer's gate
+does, and the hook is what holds the release open: helm waits for a hook to
+complete as part of the release. The slot therefore sets wait but not
+wait_for_jobs, which covers Jobs in the release's own resource set and so would
+do nothing for a hook — the same reason deploy.sh passes --wait without
+--wait-for-jobs. The apply does not return, and dependents do not start, until
+the Job succeeds, and a failing gate fails the apply.
 
-It is not enough to make the gate re-assert. A Job's spec.template is
-immutable, so an unchanged manifest is a no-op patch and the release plans
-clean; the gate therefore asserts once, when it is created. deploy.sh
-reinstalls unconditionally and argocd replaces the Job on every sync, so this
-deployer is the weaker of the three on upgrade. Closing that gap is a
-follow-up, not a property of this code.
+hook-delete-policy: before-hook-creation is what lets the gate re-assert. A
+Job's spec.template is immutable, so an unchanged manifest is a no-op patch;
+without the delete-and-recreate the gate would assert once, when it is created.
+
+That covers every upgrade Terraform actually performs on this release. It does
+not cover an upgrade elsewhere in the component: helm_release tracks chart,
+version and values, not rendered manifests, so a gate release whose own inputs
+are unchanged plans clean and is never upgraded at all. Re-asserting on a
+dependency's upgrade needs the gate release to carry something that moves with
+it — a content digest — which is a follow-up, not a property of this code.
 
 # Cluster connection
 

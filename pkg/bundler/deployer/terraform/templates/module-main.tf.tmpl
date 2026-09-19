@@ -130,12 +130,16 @@ resource "helm_release" "readiness" {
 
   # Hardcoded, not var.wait: the waiting IS the gate. An async component may
   # skip waiting on its own workloads, never on the gate that asserts it came
-  # up. wait_for_jobs is what blocks on the Job completing rather than being
-  # submitted. No atomic — a rollback would delete the Job and its logs, which
-  # are the diagnosis.
-  wait          = true
-  wait_for_jobs = true
-  timeout       = var.timeout
+  # up. No atomic — a rollback would delete the Job and its logs, which are
+  # the diagnosis.
+  #
+  # No wait_for_jobs: the gate Job is a helm hook, and helm blocks on hook
+  # completion as part of the release. wait_for_jobs covers Jobs in the
+  # release's own resource set, which a hook is not, so it would do nothing
+  # here. This matches deploy.sh, which passes --wait without --wait-for-jobs
+  # for the same release for the same reason.
+  wait    = true
+  timeout = var.timeout
 
   depends_on = [helm_release.this, helm_release.post]
 {{- if .ClusterRollover }}
