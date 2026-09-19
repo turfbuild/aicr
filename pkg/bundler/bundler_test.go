@@ -817,12 +817,17 @@ func TestBundleInfoScopesSourceSettingsPerDeployer(t *testing.T) {
 		wantTargetRevision string
 		wantAppName        string
 	}{
-		// helm and helmfile: the generators declare none of the three fields,
-		// configured or not.
+		// helm, helmfile and terraform: the generators declare none of the
+		// three fields, configured or not. Each installs from chart folders
+		// inside the bundle, so no repository coordinate is observable in
+		// anything they emit -- recording one would describe a source the
+		// bundle never names.
 		{name: "helm", deployer: config.DeployerHelm, configure: true},
 		{name: "helm unset", deployer: config.DeployerHelm},
 		{name: "helmfile", deployer: config.DeployerHelmfile, configure: true},
 		{name: "helmfile unset", deployer: config.DeployerHelmfile},
+		{name: "terraform", deployer: config.DeployerTerraform, configure: true},
+		{name: "terraform unset", deployer: config.DeployerTerraform},
 		{
 			name:               "argocd",
 			deployer:           config.DeployerArgoCD,
