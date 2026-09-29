@@ -1072,6 +1072,8 @@ func TestParseDeployerType(t *testing.T) {
 		{"flux uppercase", "FLUX", DeployerFlux, false},
 		{"flux mixed case", "Flux", DeployerFlux, false},
 		{"flux with spaces", "  flux  ", DeployerFlux, false},
+		{"terraform lowercase", "terraform", DeployerTerraform, false},
+		{"terraform uppercase", "TERRAFORM", DeployerTerraform, false},
 		{"helmfile lowercase", "helmfile", DeployerHelmfile, false},
 		{"helmfile uppercase", "HELMFILE", DeployerHelmfile, false},
 		{"helmfile mixed case", "Helmfile", DeployerHelmfile, false},
@@ -1097,9 +1099,10 @@ func TestParseDeployerType(t *testing.T) {
 func TestGetDeployerTypes(t *testing.T) {
 	types := GetDeployerTypes()
 
-	// Verify we get the expected types (argocd, argocd-helm, flux, helm, helmfile)
-	if len(types) != 5 {
-		t.Errorf("GetDeployerTypes() returned %d types, want 5", len(types))
+	// Verify we get the expected types (argocd, argocd-helm, flux, helm,
+	// helmfile, terraform)
+	if len(types) != 6 {
+		t.Errorf("GetDeployerTypes() returned %d types, want 6", len(types))
 	}
 
 	// Verify types are sorted alphabetically
@@ -1130,6 +1133,9 @@ func TestGetDeployerTypes(t *testing.T) {
 	if !found[string(DeployerHelmfile)] {
 		t.Error("GetDeployerTypes() missing 'helmfile'")
 	}
+	if !found[string(DeployerTerraform)] {
+		t.Error("GetDeployerTypes() missing 'terraform'")
+	}
 }
 
 func TestDeployerTypeString(t *testing.T) {
@@ -1142,6 +1148,7 @@ func TestDeployerTypeString(t *testing.T) {
 		{DeployerArgoCDHelm, "argocd-helm"},
 		{DeployerFlux, "flux"},
 		{DeployerHelmfile, "helmfile"},
+		{DeployerTerraform, "terraform"},
 	}
 
 	for _, tt := range tests {
